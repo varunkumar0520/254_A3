@@ -662,7 +662,7 @@
    | PT_nt("F", _,  [PT_int(lhs, iloc)]) -> AST_int(lhs, iloc)
    | PT_nt("F", _,  [PT_real(lhs, vloc)]) -> AST_real(lhs, vloc)
    | PT_nt("F", _, [PT_term("trunc", _); PT_term("(", ploc); expr; PT_term(")", _)]) -> AST_trunc(ast_ize_expr expr, ploc)
-   | PT_nt("F", _, [PT_term("float", _); PT_term("(", ploc); expr; PT_term(")", _)]) -> AST_trunc(ast_ize_expr expr, ploc)
+   | PT_nt("F", _, [PT_term("float", _); PT_term("(", ploc); expr; PT_term(")", _)]) -> AST_float(ast_ize_expr expr, ploc)
    | _ -> raise (Failure "malformed parse tree in ast_ize_expr")
  
  and ast_ize_expr_tail (lo:ast_e) (tail:parse_tree) : ast_e =   (* TT or FT *)
@@ -738,6 +738,12 @@
  | Ivalue of int
  | Rvalue of float
  | Error of string;;
+
+ let print_value v =
+  match v with
+  | Ivalue i -> print_int i
+  | Rvalue f -> print_float f
+  | Error s -> print_string s
  
  type 'a stack = 'a list;;
  let push (x:'a) (s:'a stack) : 'a stack = x :: s;;
@@ -799,20 +805,20 @@
  (* iter1 indicates whether this is the first time this statement list
     has executed in a fresh scope.  It's false for the second and
     subsequent iterations of a do loop. *)
- and interpret_sl (loop_count:int) (iter1:bool) (sl:ast_sl) (mem:memory)
-                  (inp:string list) (outp:string list)
-     : status * memory * string list * string list =
-     (*  ok?   new_mem   new_input     new_output *)
-   (*
-     NOTICE: your code should replace the following line.
-   *)
-   (Good, mem, inp, outp)
- 
+ and interpret_sl (loop_count:int) (iter1:bool) (sl:ast_sl) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
+    (*  ok?   new_mem   new_input     new_output *)
+   match sl with
+   | [] -> (Good, mem, inp, outp)   (*Returns input/output once reaching end of file successfully ($$)*)
+   | s :: rest -> 
+      let (status, new_mem, new_input, new_output) = interpret_s loop_count iter1 s mem inp outp in
+        match status with
+        | Good -> interpret_sl loop_count false rest new_mem new_input new_output
+        | Bad -> (Bad, [], [], new_output)
+        | Done -> (Done, [], [], new_output)
+
  (* NB: the following routine is complete.  You can call it on any
     statement node and it will figure out what more specific case to invoke. *)
- and interpret_s (loop_count:int) (iter1:bool) (s:ast_s) (mem:memory)
-                 (inp:string list) (outp:string list)
-     : status * memory * string list * string list =
+ and interpret_s (loop_count:int) (iter1:bool) (s:ast_s) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
      (*  ok?    new_mem  new_input     new_output *)
    match s with
    | AST_i_dec(id, vloc)  -> interpret_dec iter1 id (Ivalue(0)) vloc mem inp outp
@@ -828,18 +834,16 @@
                                              [complaint cloc "check not inside a loop"])
    | AST_error                        -> raise (Failure "cannot interpret erroneous tree")
  
- and interpret_dec (iter1:bool) (id:string) (v:value) (vloc:row_col)
-                   (mem:memory) (inp:string list) (outp:string list)
-     : status * memory * string list * string list =
+ and interpret_dec (iter1:bool) (id:string) (v:value) (vloc:row_col) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
      (*  ok?    new_mem  new_input     new_output *)
-   (*
-     NOTICE: your code should replace the following line.
-   *)
-   (Good, mem, inp, outp)
+
+  let (new_mem, success) = insert_mem id v mem in
+  if success then
+    (Good, new_mem, inp, outp)
+  else
+    (Bad, [], [], outp @ [complaint vloc (id ^ " already declared")])
  
- and interpret_read (id:string) (loc:row_col) (mem:memory)
-                    (inp:string list) (outp:string list)
-     : status * memory * string list * string list =
+ and interpret_read (id:string) (loc:row_col) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
      (*  ok?    new_mem  new_input     new_output *)
    let old_v = lookup_mem id loc mem in
    match inp with
@@ -847,60 +851,47 @@
    | str :: rest ->
        if String.contains str '.'
          then
-           (*
-             NOTICE: your code should replace the following line.
-           *)
-           (Good, mem, inp, outp)
+          let value = Rvalue(float_of_string str) in
+          let (new_mem) = update_mem id value mem in 
+          (Good, new_mem, inp, outp)
          else
-           (*
-             NOTICE: your code should replace the following line.
-           *)
-           (Good, mem, inp, outp)
+          let value = Ivalue(int_of_string str) in
+          let (new_mem) = update_mem id value mem in 
+          (Good, new_mem, inp, outp)
  
  (* NB: the following routine is complete. *)
- and interpret_write (expr:ast_e) (mem:memory)
-                     (inp:string list) (outp:string list)
-     : status * memory * string list * string list =
+ and interpret_write (expr:ast_e) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
      (*  ok?    new_mem  new_input     new_output *)
-   let (ve, new_mem)  = interpret_expr expr mem in
-     match ve with
+   let (value, new_mem)  = interpret_expr expr mem in
+     match value with
      | Ivalue(n) -> (Good, new_mem, inp, outp @ [string_of_int n])
      | Rvalue(r) -> (Good, new_mem, inp, outp @ [string_of_float r])
      | Error(s)  -> (Bad, [], [], outp @ [s])
  
- and interpret_assign (lhs:string) (rhs:ast_e) (vloc:row_col) (aloc:row_col)
-                      (mem:memory) (inp:string list) (outp:string list)
-     : status * memory * string list * string list =
+ and interpret_assign (lhs:string) (rhs:ast_e) (vloc:row_col) (aloc:row_col) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
      (*  ok?    new_mem  new_input     new_output *)
-   match lookup_mem lhs vloc mem with
-   | Error(s) -> (Bad, [], [], outp @ [complaint vloc s])
-   | old_v ->
-       (*
-         NOTICE: your code should replace the following line.
-       *)
-       (Good, mem, inp, outp)
+    let old_v = lookup_mem lhs vloc mem in
+    let (rhs_val, new_mem) = interpret_expr rhs mem in
+    match lookup_mem lhs vloc mem with
+    | Error(s) -> (Bad, [], [], outp @ [complaint vloc s])
+    | old_v -> let (new_mem) = update_mem lhs rhs_val new_mem in
+    (Good, new_mem, inp, outp)
  
- and interpret_if (loop_count:int) (cond:ast_c) (sl:ast_sl) (mem:memory)
-                  (inp:string list) (outp:string list)
-     : status * memory * string list * string list =
+ and interpret_if (loop_count:int) (cond:ast_c) (sl:ast_sl) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
      (*  ok?    new_mem  new_input     new_output *)
    (*
      NOTICE: your code should replace the following line.
    *)
    (Good, mem, inp, outp)
  
- and interpret_do (loop_count:int) (sl:ast_sl) (mem:memory)
-                  (inp:string list) (outp:string list)
-     : status * memory * string list * string list =
+ and interpret_do (loop_count:int) (sl:ast_sl) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
      (*  ok?    new_mem  new_input     new_output *)
    (*
      NOTICE: your code should replace the following line.
    *)
    (Good, mem, inp, outp)
  
- and interpret_check (cond:ast_c) (mem:memory)
-                     (inp:string list) (outp:string list)
-     : status * memory * string list * string list =
+ and interpret_check (cond:ast_c) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
      (*  ok?    new_mem  new_input     new_output *)
    (*
      NOTICE: your code should replace the following line.
@@ -908,13 +899,50 @@
    (Good, mem, inp, outp)
  
  and interpret_expr (expr:ast_e) (mem:memory) : value * memory =
-   (*
-     NOTICE: your code should replace the following line.
-   *)
-   (Error("code not written yet"), mem)
+  match expr with
+  | AST_id(id, vloc) -> (lookup_mem id vloc mem, mem)
+  | AST_int(n, iloc) -> (Ivalue(int_of_string n), mem)
+  | AST_real(r, rloc) -> (Rvalue(float_of_string r), mem)
+  | AST_float(e, ploc) ->
+    let (value, new_mem) = interpret_expr e mem in
+    (match value with
+    | Ivalue(r) -> (Rvalue(float_of_int r), new_mem)
+    | _ -> (Error("trunc applied to non-real value"), new_mem))
+  | AST_trunc(e, ploc) ->
+    let (value, new_mem) = interpret_expr e mem in
+    (match value with
+    | Rvalue(r) -> (Ivalue(int_of_float r), new_mem)
+    | _ -> (Error("trunc applied to non-real value"), new_mem))
+
+  (* | AST_binop(op, left, right) ->
+      let (left_value, mem1) = interpret_expr left mem in
+      let (right_value, mem2) = interpret_expr right mem1 in
+      match op with
+      | "+" -> (match left_value, right_value with
+        | Ivalue(l), Ivalue(r) -> (Ivalue(l + r), mem2)
+        | Rvalue(l), Rvalue(r) -> (Rvalue(l + r), mem2)
+        | _, _ -> (Error("+ applied to incompatible types"), mem2))
+      | "-" -> (match left_value, right_value with
+        | Ivalue(l), Ivalue(r) -> (Ivalue(l - r), mem2)
+        | Rvalue(l), Rvalue(r) -> (Rvalue(l - r), mem2)
+        | _, _ -> (Error("+ applied to incompatible types"), mem2))
+      | "*" -> (match left_value, right_value with
+        | Ivalue(l), Ivalue(r) -> (Ivalue(l * r), mem2)
+        | Rvalue(l), Rvalue(r) -> (Rvalue(l * r), mem2)
+        | _, _ -> (Error("* applied to incompatible types"), mem2))
+      | "/" -> (match left_value, right_value with
+        | Ivalue(l), Ivalue(r) -> (Ivalue(l / r), mem2)
+        | Rvalue(l), Rvalue(r) -> (Rvalue(l / r), mem2)
+        | _, _ -> (Error("* applied to incompatible types"), mem2))
+      | _ -> (Error("Unsupported binary operator"), mem2) *)
  
- and interpret_cond ((op:string), (lo:ast_e), (ro:ast_e), (loc:row_col)) (mem:memory)
-     : value * memory =
+  | _ -> (Error("code not written yet"), mem)
+ 
+
+
+
+     
+ and interpret_cond ((op:string), (lo:ast_e), (ro:ast_e), (loc:row_col)) (mem:memory) : value * memory =
    (*
      NOTICE: your code should replace the following line.
    *)
@@ -997,7 +1025,17 @@
      od
      write l";;
 
- let simple_prog = "read int var";;
+
+ let simple_prog = "
+int a := 4.5
+write a 
+write trunc(a)
+
+int b := 5
+write b
+write float(b)
+";;
+
  
  let ecg_ast prog =
    ast_ize_prog (parse ecg_parse_table prog);;
@@ -1007,15 +1045,15 @@
 
  let simple_parse_tree = parse ecg_parse_table simple_prog;;
  let simple_syntax_tree = ast_ize_prog simple_parse_tree;;
- 
- let sum_ave_parse_tree = parse ecg_parse_table sum_ave_prog;;
+ let simple_interpreter = interpret simple_syntax_tree "";;
+ (*let sum_ave_parse_tree = parse ecg_parse_table sum_ave_prog;;
  let sum_ave_syntax_tree = ast_ize_prog sum_ave_parse_tree;;
  
  let primes_parse_tree = parse ecg_parse_table primes_prog;;
  let primes_syntax_tree = ast_ize_prog primes_parse_tree;;
  
  let gcd_parse_tree = parse ecg_parse_table gcd_prog;;
- let gcd_syntax_tree = ast_ize_prog gcd_parse_tree;;
+ let gcd_syntax_tree = ast_ize_prog gcd_parse_tree;;*)
  
  let show_ast prog = pp_p (ast_ize_prog (parse ecg_parse_table prog));;
  
@@ -1077,3 +1115,11 @@
  
  (* Execute function "main" iff run as a stand-alone program. *)
  if !Sys.interactive then () else main ();;
+
+
+
+ (* [AST_assign
+  ("var", 
+  AST_int ("3", (1, 8)), 
+  (1, 1),
+   (1, 5))] *)
