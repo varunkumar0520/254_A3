@@ -660,7 +660,7 @@
    | PT_nt("F", _, [PT_term("(", _); expr; PT_term(")", _)]) -> ast_ize_expr expr
    | PT_nt("F", _,  [PT_id(lhs, vloc)]) -> AST_id(lhs, vloc)
    | PT_nt("F", _,  [PT_int(lhs, iloc)]) -> AST_int(lhs, iloc)
-   | PT_nt("F", _,  [PT_real(lhs, vloc)]) -> AST_real(lhs, vloc)
+   | PT_nt("F", _,  [PT_real(lhs, rloc)]) -> AST_real(lhs, rloc)
    | PT_nt("F", _, [PT_term("trunc", _); PT_term("(", ploc); expr; PT_term(")", _)]) -> AST_trunc(ast_ize_expr expr, ploc)
    | PT_nt("F", _, [PT_term("float", _); PT_term("(", ploc); expr; PT_term(")", _)]) -> AST_float(ast_ize_expr expr, ploc)
    | _ -> raise (Failure "malformed parse tree in ast_ize_expr")
@@ -879,24 +879,27 @@
  
  and interpret_if (loop_count:int) (cond:ast_c) (sl:ast_sl) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
      (*  ok?    new_mem  new_input     new_output *)
-   (*
-     NOTICE: your code should replace the following line.
-   *)
-   (Good, mem, inp, outp)
+  let (cond_value, new_mem) = interpret_cond cond mem in
+  match cond_value with
+  | Ivalue(0) -> (Good, new_mem, inp, outp)
+  | Ivalue(_) -> interpret_sl loop_count true sl new_mem inp outp
+  | Error(s) -> (Bad, [], [], outp @ [s])
  
  and interpret_do (loop_count:int) (sl:ast_sl) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
      (*  ok?    new_mem  new_input     new_output *)
-   (*
-     NOTICE: your code should replace the following line.
-   *)
-   (Good, mem, inp, outp)
+  let (status, new_mem, new_input, new_output) = interpret_sl (loop_count + 1) false sl mem inp outp in
+  match status with
+  | Done -> (Good, new_mem, new_input, new_output) (*(Done, new_mem, new_input, new_output)*)
+  | Bad -> (Bad, [], [], new_output)
+  | Good -> interpret_do loop_count sl new_mem new_input new_output
  
  and interpret_check (cond:ast_c) (mem:memory) (inp:string list) (outp:string list) : status * memory * string list * string list =
      (*  ok?    new_mem  new_input     new_output *)
-   (*
-     NOTICE: your code should replace the following line.
-   *)
-   (Good, mem, inp, outp)
+  let (cond_value, new_mem) = interpret_cond cond mem in
+  match cond_value with
+  | Ivalue(0) -> (Good, new_mem, inp, outp)
+  | Ivalue(_) -> (Done, new_mem, inp, outp)
+  | Error(s) -> (Bad, [], [], outp @ [s])
  
  and interpret_expr (expr:ast_e) (mem:memory) : value * memory =
   match expr with
@@ -913,40 +916,59 @@
     (match value with
     | Rvalue(r) -> (Ivalue(int_of_float r), new_mem)
     | _ -> (Error("trunc applied to non-real value"), new_mem))
-
-  (* | AST_binop(op, left, right) ->
-      let (left_value, mem1) = interpret_expr left mem in
-      let (right_value, mem2) = interpret_expr right mem1 in
-      match op with
-      | "+" -> (match left_value, right_value with
-        | Ivalue(l), Ivalue(r) -> (Ivalue(l + r), mem2)
-        | Rvalue(l), Rvalue(r) -> (Rvalue(l + r), mem2)
-        | _, _ -> (Error("+ applied to incompatible types"), mem2))
-      | "-" -> (match left_value, right_value with
-        | Ivalue(l), Ivalue(r) -> (Ivalue(l - r), mem2)
-        | Rvalue(l), Rvalue(r) -> (Rvalue(l - r), mem2)
-        | _, _ -> (Error("+ applied to incompatible types"), mem2))
-      | "*" -> (match left_value, right_value with
-        | Ivalue(l), Ivalue(r) -> (Ivalue(l * r), mem2)
-        | Rvalue(l), Rvalue(r) -> (Rvalue(l * r), mem2)
-        | _, _ -> (Error("* applied to incompatible types"), mem2))
-      | "/" -> (match left_value, right_value with
-        | Ivalue(l), Ivalue(r) -> (Ivalue(l / r), mem2)
-        | Rvalue(l), Rvalue(r) -> (Rvalue(l / r), mem2)
-        | _, _ -> (Error("* applied to incompatible types"), mem2))
-      | _ -> (Error("Unsupported binary operator"), mem2) *)
- 
-  | _ -> (Error("code not written yet"), mem)
- 
-
-
-
+    | AST_binop(op, e, e2, oloc) ->
+        let (lhs_val, mem1) = interpret_expr e mem in
+        let (rhs_val, mem2) = interpret_expr e2 mem1 in
+        match op with
+        | "+" -> 
+          (match lhs_val, rhs_val with
+          | Ivalue(l), Ivalue(r) -> (Ivalue(l + r), mem2)
+          | Rvalue(l), Rvalue(r) -> (Rvalue(l +. r), mem2)
+          | _, _ -> (Error("+ applied to incompatible types"), mem2))
+        | "-" -> 
+          (match lhs_val, rhs_val with
+          | Ivalue(l), Ivalue(r) -> (Ivalue(l - r), mem2)
+          | Rvalue(l), Rvalue(r) -> (Rvalue(l -. r), mem2)
+          | _, _ -> (Error("- applied to incompatible types"), mem2))
+        | "*" -> 
+          (match lhs_val, rhs_val with
+          | Ivalue(l), Ivalue(r) -> (Ivalue(l * r), mem2)
+          | Rvalue(l), Rvalue(r) -> (Rvalue(l *. r), mem2)
+          | _, _ -> (Error("* applied to incompatible types"), mem2))
+        | "/" -> 
+          (match lhs_val, rhs_val with
+          | Ivalue(l), Ivalue(r) -> (Ivalue(l / r), mem2)
+          | Rvalue(l), Rvalue(r) -> (Rvalue(l /. r), mem2)
+          | _, _ -> (Error("/ applied to incompatible types"), mem2))
      
  and interpret_cond ((op:string), (lo:ast_e), (ro:ast_e), (loc:row_col)) (mem:memory) : value * memory =
-   (*
-     NOTICE: your code should replace the following line.
-   *)
-   (Error("code not written yet"), mem)
+  let (lhs_val, mem1) = interpret_expr lo mem in
+  let (rhs_val, mem2) = interpret_expr ro mem1 in
+  match op with
+  | "==" -> (match lhs_val, rhs_val with
+              | Ivalue(l), Ivalue(r) -> (Ivalue(if l = r then 1 else 0), mem2)
+              | Rvalue(l), Rvalue(r) -> (Ivalue(if l = r then 1 else 0), mem2)
+              | _, _ -> (Error("== applied to incompatible types"), mem2))
+  | "!=" -> (match lhs_val, rhs_val with
+              | Ivalue(l), Ivalue(r) -> (Ivalue(if l <> r then 1 else 0), mem2)
+              | Rvalue(l), Rvalue(r) -> (Ivalue(if l <> r then 1 else 0), mem2)
+              | _, _ -> (Error("!= applied to incompatible types"), mem2))
+  | "<" -> (match lhs_val, rhs_val with
+            | Ivalue(l), Ivalue(r) -> (Ivalue(if l < r then 1 else 0), mem2)
+            | Rvalue(l), Rvalue(r) -> (Ivalue(if l < r then 1 else 0), mem2)
+            | _, _ -> (Error("< applied to incompatible types"), mem2))
+  | ">" -> (match lhs_val, rhs_val with
+            | Ivalue(l), Ivalue(r) -> (Ivalue(if l > r then 1 else 0), mem2)
+            | Rvalue(l), Rvalue(r) -> (Ivalue(if l > r then 1 else 0), mem2)
+            | _, _ -> (Error("> applied to incompatible types"), mem2))
+  | "<=" -> (match lhs_val, rhs_val with
+              | Ivalue(l), Ivalue(r) -> (Ivalue(if l <= r then 1 else 0), mem2)
+              | Rvalue(l), Rvalue(r) -> (Ivalue(if l <= r then 1 else 0), mem2)
+              | _, _ -> (Error("<= applied to incompatible types"), mem2))
+  | ">=" -> (match lhs_val, rhs_val with
+              | Ivalue(l), Ivalue(r) -> (Ivalue(if l >= r then 1 else 0), mem2)
+              | Rvalue(l), Rvalue(r) -> (Ivalue(if l >= r then 1 else 0), mem2)
+              | _, _ -> (Error(">= applied to incompatible types"), mem2))
  
  (*******************************************************************
      Testing
@@ -1027,14 +1049,14 @@
 
 
  let simple_prog = "
-int a := 4.5
-write a 
-write trunc(a)
-
-int b := 5
-write b
-write float(b)
-";;
+int a := 4
+int b := 3
+do
+  check a == 10
+  write a
+  a := a + 1
+od
+write b";;
 
  
  let ecg_ast prog =
@@ -1123,3 +1145,191 @@ write float(b)
   AST_int ("3", (1, 8)), 
   (1, 1),
    (1, 5))] *)
+
+
+
+
+
+
+
+(*
+   
+
+let rec interpret (ast: ast_sl) (full_input: string) : string =
+  let inp = split (regexp "[ \t\n\r]+") full_input in
+  let (_, _, _, outp) = interpret_sl 0 true ast [[]] inp [] in
+  (fold_left (str_cat " ") "" outp) ^ "\n"
+
+and interpret_sl (loop_count: int) (iter1: bool) (sl: ast_sl) (mem: memory)
+                  (inp: string list) (outp: string list)
+  : status * memory * string list * string list =
+  match sl with
+  | [] -> (Good, mem, inp, outp)
+  | s :: rest ->
+      let (status, new_mem, new_input, new_output) =
+        interpret_s loop_count iter1 s mem inp outp in
+      match status with
+      | Good -> interpret_sl loop_count false rest new_mem new_input new_output
+      | Bad -> (Bad, [], [], new_output)
+      | Done -> (Done, [], [], new_output)
+
+and interpret_s (loop_count: int) (iter1: bool) (s: ast_s) (mem: memory)
+                (inp: string list) (outp: string list)
+  : status * memory * string list * string list =
+  match s with
+  | AST_i_dec(id, vloc) -> interpret_dec iter1 id (Ivalue(0)) vloc mem inp outp
+  | AST_r_dec(id, vloc) -> interpret_dec iter1 id (Rvalue(0.0)) vloc mem inp outp
+  | AST_read(id, loc) -> interpret_read id loc mem inp outp
+  | AST_write(expr) -> interpret_write expr mem inp outp
+  | AST_assign(id, expr, vloc, aloc) -> interpret_assign id expr vloc aloc mem inp outp
+  | AST_if(cond, sl) -> interpret_if loop_count cond sl mem inp outp
+  | AST_do(sl) -> interpret_do loop_count sl mem inp outp
+  | AST_check(cond, cloc) -> if loop_count > 0
+                              then interpret_check cond mem inp outp
+                              else (Bad, [], [], outp @ [complaint cloc "check not inside a loop"])
+  | AST_error -> raise (Failure "cannot interpret erroneous tree")
+
+and interpret_dec (iter1: bool) (id: string) (v: value) (vloc: row_col)
+                 (mem: memory) (inp: string list) (outp: string list)
+  : status * memory * string list * string list =
+  let (new_mem, success) = insert_mem id v mem in
+  if success then
+    (Good, new_mem, inp, outp)
+  else
+    (Bad, [], [], outp @ [complaint vloc (id ^ " already declared")])
+
+and interpret_read (id: string) (loc: row_col) (mem: memory)
+                  (inp: string list) (outp: string list)
+  : status * memory * string list * string list =
+  match inp with
+  | [] -> (Bad, [], [], outp @ [complaint loc "unexpected end of input"])
+  | str :: rest ->
+      if String.contains str '.'
+      then
+        let value = Rvalue(float_of_string str) in
+        let (new_mem, success) = insert_mem id value mem in
+        if success then
+          (Good, new_mem, rest, outp)
+        else
+          (Bad, [], [], outp @ [complaint loc (id ^ " already declared")])
+      else
+        let value = Ivalue(int_of_string str) in
+        let (new_mem, success) = insert_mem id value mem in
+        if success then
+          (Good, new_mem, rest, outp)
+        else
+          (Bad, [], [], outp @ [complaint loc (id ^ " already declared")])
+
+and interpret_write (expr: ast_e) (mem: memory)
+                  (inp: string list) (outp: string list)
+  : status * memory * string list * string list =
+  let (value, new_mem) = interpret_expr expr mem in
+  match value with
+  | Ivalue(n) -> (Good, new_mem, inp, outp @ [string_of_int n])
+  | Rvalue(r) -> (Good, new_mem, inp, outp @ [string_of_float r])
+  | Error(s) -> (Bad, [], [], outp @ [s])
+
+and interpret_assign (lhs: string) (rhs: ast_e) (vloc: row_col) (aloc: row_col)
+                    (mem: memory) (inp: string list) (outp: string list)
+  : status * memory * string list * string list =
+  let (rhs_value, new_mem) = interpret_expr rhs mem in
+  match lookup_mem lhs vloc new_mem with
+  | Error(s) -> (Bad, [], [], outp @ [complaint vloc s])
+  | _ ->
+      let (new_mem, _) = update_mem lhs rhs_value new_mem in
+      (Good, new_mem, inp, outp)
+
+and interpret_if (loop_count: int) (cond: ast_c) (sl: ast_sl) (mem: memory)
+                (inp: string list) (outp: string list)
+  : status * memory * string list * string list =
+  let (cond_value, new_mem) = interpret_cond cond mem in
+  match cond_value with
+  | Ivalue(0) -> interpret_sl loop_count false sl new_mem inp outp
+  | Ivalue(_) -> interpret_sl loop_count false sl new_mem inp outp
+  | Rvalue(0.0) -> interpret_sl loop_count false sl new_mem inp outp
+  | Rvalue(_) -> interpret_sl loop_count false sl new_mem inp outp
+  | Error(s) -> (Bad, [], [], outp @ [s])
+
+and interpret_do (loop_count: int) (sl: ast_sl) (mem: memory)
+                (inp: string list) (outp: string list)
+  : status * memory * string list * string list =
+  let (status, new_mem, new_input, new_output) =
+    interpret_sl (loop_count + 1) true sl mem inp outp in
+  match status with
+  | Done -> (Done, new_mem, new_input, new_output)
+  | Bad -> (Bad, [], [], new_output)
+  | Good -> interpret_do loop_count sl new_mem new_input new_output
+
+and interpret_check (cond: ast_c) (mem: memory)
+                  (inp: string list) (outp: string list)
+  : status * memory * string list * string list =
+  let (cond_value, new_mem) = interpret_cond cond mem in
+  match cond_value with
+  | Ivalue(0) -> (Done, new_mem, inp, outp)
+  | Ivalue(_) -> (Good, new_mem, inp, outp)
+  | Rvalue(0.0) -> (Done, new_mem, inp, outp)
+  | Rvalue(_) -> (Good, new_mem, inp, outp)
+  | Error(s) -> (Bad, [], [], outp @ [s])
+
+and interpret_expr (expr: ast_e) (mem: memory) : value * memory =
+  match expr with
+  | AST_id(id) -> (lookup_mem id dummy_loc mem, mem)
+  | AST_i_num(n) -> (Ivalue(n), mem)
+  | AST_r_num(r) -> (Rvalue(r), mem)
+  | AST_trunc(e) ->
+      let (value, new_mem) = interpret_expr e mem in
+      match value with
+      | Rvalue(r) -> (Ivalue(int_of_float r), new_mem)
+      | _ -> (Error("trunc applied to non-real value"), new_mem)
+  | AST_float(e) ->
+      let (value, new_mem) = interpret_expr e mem in
+      match value with
+      | Ivalue(n) -> (Rvalue(float_of_int n), new_mem)
+      | _ -> (Error("float applied to non-integer value"), new_mem)
+| AST_binary_op(op, left, right) ->
+      let (left_value, mem1) = interpret_expr left mem in
+      let (right_value, mem2) = interpret_expr right mem1 in
+      match op with
+      | "+" -> (match left_value, right_value with
+                | Ivalue(l), Ivalue(r) -> (Ivalue(l + r), mem2)
+                | Rvalue(l), Rvalue(r) -> (Rvalue(l + r), mem2)
+                | _, _ -> (Error("+ applied to incompatible types"), mem2))
+      | "*" -> (match left_value, right_value with
+                | Ivalue(l), Ivalue(r) -> (Ivalue(l * r), mem2)
+                | Rvalue(l), Rvalue(r) -> (Rvalue(l * r), mem2)
+                | _, _ -> (Error("* applied to incompatible types"), mem2))
+      | _ -> (Error("Unsupported binary operator"), mem2)  
+
+and interpret_cond ((op, lo, ro, loc): string * ast_e * ast_e * row_col) (mem: memory)
+  : value * memory =
+  let (lval, mem1) = interpret_expr lo mem in
+  let (rval, mem2) = interpret_expr ro mem1 in
+  match op with
+  | "==" -> (match lval, rval with
+             | Ivalue(l), Ivalue(r) -> (Ivalue(if l = r then 1 else 0), mem2)
+             | Rvalue(l), Rvalue(r) -> (Ivalue(if l = r then 1 else 0), mem2)
+             | _, _ -> (Error("== applied to incompatible types"), mem2))
+  | "!=" -> (match lval, rval with
+             | Ivalue(l), Ivalue(r) -> (Ivalue(if l <> r then 1 else 0), mem2)
+             | Rvalue(l), Rvalue(r) -> (Ivalue(if l <> r then 1 else 0), mem2)
+             | _, _ -> (Error("!= applied to incompatible types"), mem2))
+  | "<" -> (match lval, rval with
+            | Ivalue(l), Ivalue(r) -> (Ivalue(if l < r then 1 else 0), mem2)
+            | Rvalue(l), Rvalue(r) -> (Ivalue(if l < r then 1 else 0), mem2)
+            | _, _ -> (Error("< applied to incompatible types"), mem2))
+  | ">" -> (match lval, rval with
+            | Ivalue(l), Ivalue(r) -> (Ivalue(if l > r then 1 else 0), mem2)
+            | Rvalue(l), Rvalue(r) -> (Ivalue(if l > r then 1 else 0), mem2)
+            | _, _ -> (Error("> applied to incompatible types"), mem2))
+  | "<=" -> (match lval, rval with
+             | Ivalue(l), Ivalue(r) -> (Ivalue(if l <= r then 1 else 0), mem2)
+             | Rvalue(l), Rvalue(r) -> (Ivalue(if l <= r then 1 else 0), mem2)
+             | _, _ -> (Error("<= applied to incompatible types"), mem2))
+  | ">=" -> (match lval, rval with
+             | Ivalue(l), Ivalue(r) -> (Ivalue(if l >= r then 1 else 0), mem2)
+             | Rvalue(l), Rvalue(r) -> (Ivalue(if l >= r then 1 else 0), mem2)
+             | _, _ -> (Error(">= applied to incompatible types"), mem2)
+
+
+
+*)
